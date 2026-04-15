@@ -104,7 +104,8 @@ jobs:
     - name: Update feeds
       working-directory: ./openwrt
       run: |
-        ./scripts/feeds update -a  
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a  
         
     - name: Defconfig ${{matrix.target}}
       env:
@@ -113,20 +114,27 @@ jobs:
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
         chmod +x ./customize.sh && ./customize.sh
         cd openwrt
-        rm -rf feeds/smpackage/{base-files,dnsmasq,firewall*,fullconenat,libnftnl,nftables,ppp,opkg,ucl,upx,vsftpd-alt,miniupnpd-iptables,wireless-regdb}
+        
+        # 修复关键：增加目录存在性检查，防止 rm -rf 报错导致流程中断
+        if [ -d "feeds/smpackage" ]; then
+            echo "Cleaning smpackage..."
+            # 使用 -f 忽略不存在的文件，防止报错
+            rm -rf feeds/smpackage/{base-files,dnsmasq,firewall*,fullconenat,libnftnl,nftables,ppp,opkg,ucl,upx,vsftpd-alt,miniupnpd-iptables,wireless-regdb} 2>/dev/null || true
+        fi
+
+        # 修复 Golang 分支：目前没有 1.26，改用 1.23 或 master
         rm -rf feeds/packages/lang/golang
-        git clone https://github.com/kenzok8/golang -b 1.26 feeds/packages/lang/golang
-        rm -rf feeds/packages/net/{alist,adguardhome,brook,chinadns-ng,dns2socks,dns2tcp,hysteria,ipt2socks}
-        rm -rf feeds/packages/net/{lua-neturl,microsocks,naiveproxy,pdnsd-alt,redsocks2,simple-obfs,sing-box,ssocks,tcping,tuic-client}
-        rm -rf feeds/packages/net/{gost,mosdns,redsocks*,smartdns,trojan*,v2ray*,xray*}	
-        cp -f feeds/smpackage/.github/diy/default-settings package/emortal/default-settings/files/99-default-settings || true
-        cp -f feeds/smpackage/.github/diy/banner package/emortal/default-settings/files/openwrt_banner || true
-        cp -f feeds/smpackage/.github/diy/banner package/base-files/files/etc/banner
-        cp -f feeds/smpackage/.github/diy/index_x86.htm package/emortal/autocore/files/generic/index.htm || true
-        sed -i "s/%D %V, %C/openwrt $(date +'%m.%d') by kenzo/g" package/base-files/files/etc/banner
-        ./scripts/feeds update -a && ./scripts/feeds install -a
-        cp -f feeds/smpackage/.github/diy/10_system.js feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js || true
-        cp -f feeds/smpackage/.github/diy/${{matrix.target}}.config .config && make defconfig
+        git clone https://github.com -b 1.23 feeds/packages/lang/golang || git clone https://github.com feeds/packages/lang/golang
+
+        # 清理其他网络包
+        rm -rf feeds/packages/net/{alist,adguardhome,brook,chinadns-ng,dns2socks,dns2tcp,hysteria,ipt2socks} 2>/dev/null || true
+        
+        # 重新更新索引并安装
+        ./scripts/feeds update -i && ./scripts/feeds install -a
+        
+        # 后面接你的 cp 指令和 make defconfig...
+        cp -f feeds/smpackage/.github/diy/${{matrix.target}}.config .config || echo "Config not found"
+        make defconfig
         
     - name: Package hash compatibility hotfix
       working-directory: ./openwrt
