@@ -169,7 +169,7 @@ jobs:
       if: success() && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
         mkdir firmware
-        mv -f openwrt/bin/targets/*/*/{*combined-efi.img.gz} ./firmware/ 2>/dev/null || true
+        mv -f openwrt/bin/targets/*/*/*combined-efi.img.gz ./firmware/ 2>/dev/null || true
         echo "FIRMWARE=$PWD/firmware" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT      
     
