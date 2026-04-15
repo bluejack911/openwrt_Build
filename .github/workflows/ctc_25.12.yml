@@ -170,10 +170,7 @@ jobs:
       run: |
         mkdir firmware
         mv -f openwrt/bin/targets/*/*/{*combined-efi.img.gz} ./firmware/ 2>/dev/null || true
-        cp openwrt/.config ./firmware/${{matrix.target}}.config 2>/dev/null || true
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "status=success" >> $GITHUB_OUTPUT
-        
+      
     
     - name: Upload firmware directory
       uses: actions/upload-artifact@main
