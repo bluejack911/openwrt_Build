@@ -110,42 +110,35 @@ jobs:
       env:
         CONFIG_FILE: '${{matrix.target}}.config'
       run: |
-        # 1. 移动配置文件到 openwrt 目录
         [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
         cd openwrt
 
-        # 2. 先更新 feeds (这一步会创建 feeds 目录)
+        # 1. 第一步：更新并安装 (这一步后 feeds 目录才完整可用)
         ./scripts/feeds update -a
+        ./scripts/feeds install -a
 
-        # 3. 此时目录已存在，再执行清理和 customize.sh
-        # 注意：这里我们返回上级目录调用 customize.sh，或确保脚本路径正确
+        # 2. 第二步：此时执行 customize.sh 和清理逻辑
         cd ..
         chmod +x ./customize.sh && ./customize.sh
         cd openwrt
 
-        # 4. 执行你的清理逻辑 (加 -f 防止目录不存在报错)
+        # 3. 此时目录已存在，执行你的清理和替换逻辑
         rm -rf feeds/smpackage/{base-files,dnsmasq,firewall*,fullconenat,libnftnl,nftables,ppp,opkg,ucl,upx,vsftpd-alt,miniupnpd-iptables,wireless-regdb} 2>/dev/null || true
         rm -rf feeds/packages/lang/golang
+        # 修正 Golang 地址和分支
+        git clone --depth 1 https://github.com -b 1.23 feeds/packages/lang/golang || \
+        git clone --depth 1 https://github.com feeds/packages/lang/golang
         
-        git clone --depth 1 https://github.com/kenzok8/golang -b 1.26 feeds/packages/lang/golang || \
-        git clone --depth 1 https://github.com/kenzok8/golang feeds/packages/lang/golang
-        
-        rm -rf feeds/packages/net/{alist,adguardhome,brook,chinadns-ng,dns2socks,dns2tcp,hysteria,ipt2socks} 2>/dev/null || true
-        rm -rf feeds/packages/net/{lua-neturl,microsocks,naiveproxy,pdnsd-alt,redsocks2,simple-obfs,sing-box,ssocks,tcping,tuic-client} 2>/dev/null || true
-        rm -rf feeds/packages/net/{gost,mosdns,redsocks*,smartdns,trojan*,v2ray*,xray*} 2>/dev/null || true
-        
-        # 5. 安装 feeds
-        ./scripts/feeds install -a
-
-        # 6. 拷贝自定义文件
+        # 4. 拷贝文件
         cp -f feeds/smpackage/.github/diy/default-settings package/emortal/default-settings/files/99-default-settings || true
         cp -f feeds/smpackage/.github/diy/banner package/base-files/files/etc/banner
         sed -i "s/%D %V, %C/openwrt $(date +'%m.%d') by kenzo/g" package/base-files/files/etc/banner
-        cp -f feeds/smpackage/.github/diy/10_system.js feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js || true
         
-        # 7. 再次确认配置文件并 make defconfig
+        # 5. 最后同步一次 install 并应用配置
+        ./scripts/feeds install -a
         cp -f feeds/smpackage/.github/diy/${{matrix.target}}.config .config || true
         make defconfig
+
 
         
     - name: Package hash compatibility hotfix
