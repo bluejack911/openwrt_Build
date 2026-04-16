@@ -169,20 +169,25 @@ jobs:
       if: success() && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
         mkdir firmware
-        mv -f openwrt/bin/targets/*/*/{*combined*,*sysupgrade*} ./firmware/ 2>/dev/null || true
-        cp openwrt/.config ./firmware/${{matrix.target}}.config 2>/dev/null || true
-        cp openwrt/build_dir/target-*/linux-*/linux-*/.config ./firmware/${{matrix.target}}_kernel.config 2>/dev/null || true
+        # 1. 只移动包含 combined-efi 的文件
+        mv -f openwrt/bin/targets/*/*/*combined-efi.img.gz ./firmware/ 2>/dev/null || true
+        
         cd firmware
+        # 2. 生成版本信息 (仅保留 md5 和 目标名称等必要信息)
         echo "v${{ env.date2 }}" > version.txt
-        md5_output=$( (md5sum *squashfs-sysupgrade* 2>/dev/null || md5sum *squashfs-combined-efi* 2>/dev/null) | awk '{print $1}' ) || true
+        md5_output=$(md5sum *combined-efi.img.gz 2>/dev/null | awk '{print $1}')
         echo "$md5_output" >> version.txt
-        rename -v "s/^immortalwrt/${{ env.VERSION }}-openwrt/" * || true
-        rename -v "s/friendlyarm_//" *gz || true
-        echo "$md5_output" >> version.txt
-        echo ${{matrix.target}} >> version.txt     
-        rm -rf sha256sums
+        echo "${{ matrix.target }}" >> version.txt
+        
+        # 3. 统一重命名为 04.15-openwrt-x86-64-generic-squashfs-combined-efi.img.gz
+        # 这里假设 env.VERSION 是 04.15，如果不是，可以直接写死或换成你的变量
+        for file in *combined-efi.img.gz; do
+          mv "$file" "${{ env.VERSION }}-openwrt-x86-64-generic-squashfs-combined-efi.img.gz" 2>/dev/null || true
+        done
+
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
+
               
     - name: Upload firmware directory
       uses: actions/upload-artifact@main
