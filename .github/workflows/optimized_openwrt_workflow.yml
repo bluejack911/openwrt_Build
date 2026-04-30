@@ -1,0 +1,274 @@
+#=================================================
+# Description: Build OpenWrt using GitHub Actions (Optimized Version)
+# License: MIT
+# Author: kenzo (Modified by Manus AI)
+#=================================================
+
+name: openwrt_25.12_optimized
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'ssh'
+        required: false
+        default: 'false'
+
+env:
+  UPLOAD_BIN_DIR: false
+  UPLOAD_FIRMWARE: true
+  UPLOAD_COWTRANSFER: false
+  UPLOAD_WETRANSFER: false
+  UPLOAD_RELEASE: false
+  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+  REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
+  REMOTE_PORT: ${{ secrets.REMOTE_PORT }}
+  DOCKER_ID: ${{ secrets.DOCKER_ID }}
+  DOCKER_PASSWD: ${{ secrets.DOCKER_PASSWD }}  
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    name: Build ${{matrix.target}}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ctc_25.12]
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Free disk space
+      uses: coder-xiaomo/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install build-essential clang flex bison g++ gawk \
+        gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+        python3-setuptools rsync swig unzip zlib1g-dev file wget \
+        llvm python3-pyelftools libpython3-dev aria2 jq qemu-utils ccache rename \
+        libelf-dev device-tree-compiler libgmp3-dev libmpc-dev libfuse-dev
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "Asia/Shanghai"
+        
+    - name: Get current date & Set Variables
+      id: date
+      run: |
+        echo "date=$(date +'%m/%d_%Y_%H/%M')" >> $GITHUB_ENV
+        echo "date2=$(date +'%Y/%m %d')" >> $GITHUB_ENV
+        echo "date3=$(date +'%m.%d')" >> $GITHUB_ENV
+        echo "FILE_DATE=$(date +'%Y%m%d%H%M')" >> $GITHUB_ENV
+        echo "DEVICE_NAME=_x86_64" >> $GITHUB_ENV
+        echo "ARCH=linux/amd64" >> $GITHUB_ENV
+        echo "DOCKERTAG=${{ secrets.DOCKER_ID }}/openwrt-6p:latest" >> $GITHUB_ENV
+        
+        VERSION="$(echo "${{github.event.action}}" | grep -Eo "[0-9.]+" | head -n 1)" || true
+        [ "$VERSION" ] && echo "VERSION=$VERSION" >> $GITHUB_ENV || echo "VERSION=$(date +'%m.%d')" >> $GITHUB_ENV         
+        
+    - name: Clone source code
+      env: 
+        REPO_URL: https://github.com/immortalwrt/immortalwrt
+        REPO_BRANCH: openwrt-25.12
+      run: |
+        git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+        cd openwrt
+        sed -i '$a src-git smpackage https://github.com/kenzok8/small-package' feeds.conf.default
+
+    - name: Free up disk space (Cache directories)
+      run: |
+        sudo mkdir -p -m 777 /mnt/openwrt/dl /mnt/openwrt/staging_dir /mnt/openwrt/build_dir
+        ln -sf /mnt/openwrt/dl openwrt/dl
+        ln -sf /mnt/openwrt/staging_dir openwrt/staging_dir
+        ln -sf /mnt/openwrt/build_dir openwrt/build_dir
+
+    - name: Update feeds
+      working-directory: ./openwrt
+      run: ./scripts/feeds update -a  
+        
+    - name: Defconfig ${{matrix.target}}
+      env:
+        CONFIG_FILE: '${{matrix.target}}.config'
+      run: |
+        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        [ -f ./customize.sh ] && chmod +x ./customize.sh && ./customize.sh
+        cd openwrt
+        # 清理衝突的包
+        rm -rf feeds/smpackage/{base-files,dnsmasq,firewall*,fullconenat,libnftnl,nftables,ppp,opkg,ucl,upx,vsftpd-alt,miniupnpd-iptables,wireless-regdb}
+        rm -rf feeds/packages/lang/golang
+        git clone https://github.com/kenzok8/golang -b 1.26 feeds/packages/lang/golang
+        
+        # 批量移除重複或不需要的網絡插件
+        for pkg in alist adguardhome brook chinadns-ng dns2socks dns2tcp hysteria ipt2socks \
+                   lua-neturl microsocks naiveproxy pdnsd-alt redsocks2 simple-obfs sing-box ssocks tcping tuic-client \
+                   gost mosdns redsocks* smartdns trojan* v2ray* xray*; do
+          rm -rf feeds/packages/net/$pkg
+        done
+
+        # 應用自定義設置
+        cp -f feeds/smpackage/.github/diy/default-settings package/emortal/default-settings/files/99-default-settings || true
+        cp -f feeds/smpackage/.github/diy/banner package/emortal/default-settings/files/openwrt_banner || true
+        cp -f feeds/smpackage/.github/diy/banner package/base-files/files/etc/banner || true
+        cp -f feeds/smpackage/.github/diy/index_x86.htm package/emortal/autocore/files/generic/index.htm || true
+        
+        # 更新 Banner 信息
+        sed -i "s/%D %V, %C/openwrt $(date +'%m.%d') by kenzo/g" package/base-files/files/etc/banner
+        
+        ./scripts/feeds update -a && ./scripts/feeds install -a
+        cp -f feeds/smpackage/.github/diy/10_system.js feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js || true
+        
+        # 應用目標配置
+        if [ -f feeds/smpackage/.github/diy/${{matrix.target}}.config ]; then
+          cp -f feeds/smpackage/.github/diy/${{matrix.target}}.config .config
+        fi
+        make defconfig
+        
+    - name: Package hash compatibility hotfix
+      working-directory: ./openwrt
+      run: |
+        sed -i -E 's/^(PKG_MIRROR_HASH|PKG_HASH):=.*/\1:=skip/' package/system/opkg/Makefile || true
+        [ -f package/network/utils/fullconenat-nft/Makefile ] && sed -i -E 's/^PKG_MIRROR_HASH:=.*/PKG_MIRROR_HASH:=skip/' package/network/utils/fullconenat-nft/Makefile || true
+
+    - name: Download package
+      working-directory: ./openwrt
+      run: |
+        make download -j$(nproc)
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Cache
+      uses: klever1988/cachewrtbuild@main
+      with:
+        ccache: 'true'
+        prefix: ${{ github.workspace }}/openwrt
+
+    - name: Compile the firmware
+      working-directory: ./openwrt
+      run: |
+        echo -e "$(($(nproc)+1)) thread compile"
+        make -j$(($(nproc)+1)) || make -j1 V=s      
+     
+    - name: Check space usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Upload bin directory
+      uses: actions/upload-artifact@v4
+      if: success() && env.UPLOAD_BIN_DIR == 'true'
+      with:
+        name: OpenWrt_bin${{ env.DEVICE_NAME }}_${{ env.FILE_DATE }}
+        path: openwrt/bin
+
+    - name: Organize files
+      id: organize
+      if: success() && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
+      run: |
+        mkdir firmware
+        # 使用 find 靈活查找固件
+        find openwrt/bin/targets/ -name "*combined-efi.img.gz" -exec mv -f {} ./firmware/ \;
+        
+        cd firmware
+        if [ "$(ls -A .)" ]; then
+          echo "v${{ env.date2 }}" > version.txt
+          md5sum *combined-efi.img.gz 2>/dev/null | awk '{print $1}' >> version.txt
+          echo "${{ matrix.target }}" >> version.txt
+          
+          # 統一重命名
+          for file in *combined-efi.img.gz; do
+            mv "$file" "${{ env.VERSION }}-openwrt-x86-64-generic-squashfs-combined-efi.img.gz"
+          done
+          
+          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+          echo "status=success" >> $GITHUB_OUTPUT
+        else
+          echo "No firmware found!"
+          exit 1
+        fi
+              
+    - name: Upload firmware directory
+      uses: actions/upload-artifact@v4
+      if: steps.organize.outputs.status == 'success' && !cancelled()
+      with:
+        name: ${{ env.date3 }}_${{matrix.target}}
+        path: ${{ env.FIRMWARE }}
+        
+    - name: Set Up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      if: env.DOCKER_ID && env.DOCKER_PASSWD
+
+    - name: Login To DockerHub
+      uses: docker/login-action@v3
+      if: env.DOCKER_ID && env.DOCKER_PASSWD
+      with:
+        username: ${{ secrets.DOCKER_ID }}
+        password: ${{ secrets.DOCKER_PASSWD }}
+        
+    - name: Build and push docker image
+      uses: docker/build-push-action@v5
+      continue-on-error: true
+      if: env.DOCKER_ID && env.DOCKER_PASSWD && ! contains(github.event.action, 'noser')
+      with:
+        platforms: ${{ env.ARCH }}
+        file: Dockerfile
+        context: .
+        push: true
+        tags: |
+          ${{ secrets.DOCKER_ID }}/openwrt-6p:${{matrix.target}}
+          ${{ env.DOCKERTAG }}        
+
+    - name: Generate release tag
+      id: tag
+      if: success() && env.UPLOAD_RELEASE == 'true' && !cancelled()
+      run: |
+        B2_PUBLIC_BASE_URL="${{ secrets.B2_PUBLIC_BASE_URL }}"
+        [ -z "$B2_PUBLIC_BASE_URL" ] && B2_PUBLIC_BASE_URL="https://down.dllkids.xyz"
+        B2_LINK="${B2_PUBLIC_BASE_URL%/}/op/firmware/${{matrix.target}}/"
+        echo -e "牆內外加速下載 🎈:\n" >> release.txt
+        echo -e "[Backblaze B2]($B2_LINK)\n" >> release.txt
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Upload firmware to release
+      uses: softprops/action-gh-release@v2
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
+      with:
+        files: "${{ env.FIRMWARE }}/*"
+        name: ${{ env.date2 }} ${{matrix.target}}
+        tag_name: ${{ env.date }}_${{matrix.target}}
+        body_path: release.txt
+
+    - name: Delete workflow runs
+      uses: Mattraks/delete-workflow-runs@main
+      with:
+        retain_days: 1
+        keep_minimum_runs: 0
+
+    - name: Remove old Releases
+      uses: dev-drprasad/delete-older-releases@master
+      if: success() && env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 6
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
