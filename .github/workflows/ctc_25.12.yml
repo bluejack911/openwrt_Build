@@ -16,14 +16,15 @@ on:
         default: 'false'
 
 env:
-  UPLOAD_BIN_DIR: false
+  # ===== 只保留 Actions 产物上传（保留 7 天），其余上传/发布通道全部注释停用 =====
+  # UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
-  UPLOAD_RELEASE: true
-  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-  REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
-  REMOTE_PORT: ${{ secrets.REMOTE_PORT }}
-  DOCKER_ID: ${{ secrets.DOCKER_ID }}
-  DOCKER_PASSWD: ${{ secrets.DOCKER_PASSWD }}  
+  # UPLOAD_RELEASE: true
+  # SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+  # REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
+  # REMOTE_PORT: ${{ secrets.REMOTE_PORT }}
+  # DOCKER_ID: ${{ secrets.DOCKER_ID }}
+  # DOCKER_PASSWD: ${{ secrets.DOCKER_PASSWD }}  
   TZ: Asia/Shanghai
 
 jobs:
@@ -125,7 +126,14 @@ jobs:
         ./scripts/feeds update -a && ./scripts/feeds install -a
         patch -p1 < feeds/smpackage/.github/diy/patches/001-dnsmasq-lxc-jail.patch
         cp -f feeds/smpackage/.github/diy/10_system.js feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js || true
-        cp -f feeds/smpackage/.github/diy/${{matrix.target}}.config .config && make defconfig
+        # 优先使用仓库根目录的自定义配置（已由 mv 复制为 openwrt/.config），缺失时回退到 smpackage 自带配置
+        if [ -f .config ]; then
+          echo "==> 使用仓库自定义配置 $CONFIG_FILE（已从仓库根目录复制到 openwrt/.config）"
+        else
+          echo "==> 仓库根目录缺少 $CONFIG_FILE，回退到 smpackage 自带配置"
+          cp -f feeds/smpackage/.github/diy/${{matrix.target}}.config .config
+        fi
+        make defconfig
         
     - name: Package hash compatibility hotfix
       working-directory: ./openwrt
@@ -163,12 +171,12 @@ jobs:
       if: (!cancelled())
       run: df -hT
 
-    - name: Upload bin directory
-      uses: actions/upload-artifact@main
-      if: success() && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
+    # - name: Upload bin directory
+    #   uses: actions/upload-artifact@main
+    #   if: success() && env.UPLOAD_BIN_DIR == 'true'
+    #   with:
+    #     name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+    #     path: openwrt/bin
 
     - name: Organize files
       id: organize
@@ -196,66 +204,67 @@ jobs:
       with:
         name: ${{ env.date3 }}_${{matrix.target}}
         path: ${{ env.FIRMWARE }}
+        retention-days: 7   # Actions 产物保留 7 天
         
-    - name: Set Up Docker Buildx
-      uses: docker/setup-buildx-action@master
-      if: env.DOCKER_ID && env.DOCKER_PASSWD
+    # - name: Set Up Docker Buildx
+    #   uses: docker/setup-buildx-action@master
+    #   if: env.DOCKER_ID && env.DOCKER_PASSWD
 
-    - name: Login To DockerHub
-      uses: docker/login-action@master
-      if: env.DOCKER_ID && env.DOCKER_PASSWD
-      with:
-        username: ${{ secrets.DOCKER_ID }}
-        password: ${{ secrets.DOCKER_PASSWD }}
+    # - name: Login To DockerHub
+    #   uses: docker/login-action@master
+    #   if: env.DOCKER_ID && env.DOCKER_PASSWD
+    #   with:
+    #     username: ${{ secrets.DOCKER_ID }}
+    #     password: ${{ secrets.DOCKER_PASSWD }}
         
-    - name: Build and push docker image
-      uses: docker/build-push-action@master
-      continue-on-error: true
-      if: env.DOCKER_ID && env.DOCKER_PASSWD && ! contains(github.event.action, 'noser')
-      with:
-        platforms: ${{ env.ARCH }}
-        file: Dockerfile
-        context: .
-        push: true
-        tags: |
-          ${{ secrets.DOCKER_ID }}/openwrt-6p:${{matrix.target}}
-          ${{ env.DOCKERTAG }}        
+    # - name: Build and push docker image
+    #   uses: docker/build-push-action@master
+    #   continue-on-error: true
+    #   if: env.DOCKER_ID && env.DOCKER_PASSWD && ! contains(github.event.action, 'noser')
+    #   with:
+    #     platforms: ${{ env.ARCH }}
+    #     file: Dockerfile
+    #     context: .
+    #     push: true
+    #     tags: |
+    #       ${{ secrets.DOCKER_ID }}/openwrt-6p:${{matrix.target}}
+          # ${{ env.DOCKERTAG }}        
 
-    - name: Generate release tag
-      id: tag
-      if: success() && env.UPLOAD_RELEASE == 'true' && !cancelled()
-      run: |
-        R2_PUBLIC_BASE_URL="${{ secrets.R2_PUBLIC_BASE_URL }}"
-        [ -z "$R2_PUBLIC_BASE_URL" ] && R2_PUBLIC_BASE_URL="https://down.dllkids.xyz"
-        R2_LINK="${R2_PUBLIC_BASE_URL%/}/firmware/${{matrix.target}}/"
-        echo -e "墙内外加速下载 🎈:\n" >> release.txt
-        echo -e "[Cloudflare R2]($R2_LINK)\n" >> release.txt
-        touch release.txt
-        echo "status=success" >> $GITHUB_OUTPUT
+    # - name: Generate release tag
+    #   id: tag
+    #   if: success() && env.UPLOAD_RELEASE == 'true' && !cancelled()
+    #   run: |
+    #     R2_PUBLIC_BASE_URL="${{ secrets.R2_PUBLIC_BASE_URL }}"
+    #     [ -z "$R2_PUBLIC_BASE_URL" ] && R2_PUBLIC_BASE_URL="https://down.dllkids.xyz"
+    #     R2_LINK="${R2_PUBLIC_BASE_URL%/}/firmware/${{matrix.target}}/"
+    #     echo -e "墙内外加速下载 🎈:\n" >> release.txt
+    #     echo -e "[Cloudflare R2]($R2_LINK)\n" >> release.txt
+    #     touch release.txt
+    #     echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: Upload firmware to release
-      uses: softprops/action-gh-release@v2
-      if: steps.tag.outputs.status == 'success' && !cancelled()
-      env:
-        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
-      with:
-        files: "${{ env.FIRMWARE }}/*"
-        name: ${{ env.date2 }} ${{matrix.target}}
-        tag_name: ${{ env.date }}_${{matrix.target}}
-        body_path: release.txt
+    # - name: Upload firmware to release
+    #   uses: softprops/action-gh-release@v2
+    #   if: steps.tag.outputs.status == 'success' && !cancelled()
+    #   env:
+    #     GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
+    #   with:
+    #     files: "${{ env.FIRMWARE }}/*"
+    #     name: ${{ env.date2 }} ${{matrix.target}}
+    #     tag_name: ${{ env.date }}_${{matrix.target}}
+    #     body_path: release.txt
 
-    - name: Delete workflow runs
-      uses: Mattraks/delete-workflow-runs@main
-      with:
-        retain_days: 1
-        keep_minimum_runs: 0
+    # - name: Delete workflow runs
+    #   uses: Mattraks/delete-workflow-runs@main
+    #   with:
+    #     retain_days: 1
+    #     keep_minimum_runs: 0
 
-    - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@master
-      if: success() && env.UPLOAD_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 6
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
+    # - name: Remove old Releases
+    #   uses: dev-drprasad/delete-older-releases@master
+    #   if: success() && env.UPLOAD_RELEASE == 'true' && !cancelled()
+    #   with:
+    #     keep_latest: 6
+    #     delete_tags: true
+    #   env:
+    #     GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
         
