@@ -183,19 +183,12 @@ jobs:
       if: success() && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
         mkdir firmware
-        mv -f openwrt/bin/targets/*/*/{*combined*,*sysupgrade*} ./firmware/ 2>/dev/null || true
-        cp openwrt/.config ./firmware/${{matrix.target}}.config 2>/dev/null || true
-        cp openwrt/build_dir/target-*/linux-*/linux-*/.config ./firmware/${{matrix.target}}_kernel.config 2>/dev/null || true
-        cd firmware
-        echo "v${{ env.date2 }}" > version.txt
-        md5_output=$( (md5sum *squashfs-sysupgrade* 2>/dev/null || md5sum *squashfs-combined-efi* 2>/dev/null) | awk '{print $1}' ) || true
-        echo "$md5_output" >> version.txt
-        rename -v "s/^immortalwrt/${{ env.VERSION }}-openwrt/" * || true
-        rename -v "s/friendlyarm_//" *gz || true
-        echo "$md5_output" >> version.txt
-        echo ${{matrix.target}} >> version.txt     
-        rm -rf sha256sums
-        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        # 只保留 combined-efi 安装镜像（img.gz），sysupgrade/配置文件/version.txt 等一律不打包
+        mv -f openwrt/bin/targets/*/*/*squashfs-combined-efi.img.gz ./firmware/ 2>/dev/null || true
+        # 找不到目标文件则显式失败，避免上传空产物
+        [ -n "$(ls firmware/)" ] || { echo "!! 未找到 squashfs-combined-efi.img.gz，构建产物缺失"; exit 1; }
+        ls -lh firmware/
+        echo "FIRMWARE=$PWD/firmware" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT            
       
     - name: Upload firmware directory
