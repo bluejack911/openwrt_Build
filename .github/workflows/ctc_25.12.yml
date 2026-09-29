@@ -16,10 +16,7 @@ on:
         default: 'false'
 
 env:
-  UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
-  UPLOAD_COWTRANSFER: false
-  UPLOAD_WETRANSFER: false
   UPLOAD_RELEASE: true
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
   REMOTE_HOST: ${{ secrets.REMOTE_HOST }}
@@ -42,17 +39,6 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@main
-
-    - name: Free disk space
-      uses: coder-xiaomo/free-disk-space@main
-      with:
-        tool-cache: false
-        android: true
-        dotnet: true
-        haskell: true
-        large-packages: true
-        docker-images: true
-        swap-storage: true
 
     - name: Set up Python 3.8
       uses: actions/setup-python@v6
@@ -107,10 +93,9 @@ jobs:
         ./scripts/feeds update -a  
         
     - name: Defconfig ${{matrix.target}}
-      env:
-        CONFIG_FILE: '${{matrix.target}}.config'
       run: |
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE openwrt/.config
+        # 使用仓库根目录的自定义 .config 编译
+        cp -f .config openwrt/.config
         chmod +x ./customize.sh && ./customize.sh
         cd openwrt
         rm -rf feeds/smpackage/{base-files,dnsmasq,firewall*,fullconenat,libnftnl,nftables,ppp,opkg,ucl,upx,vsftpd-alt,miniupnpd-iptables,wireless-regdb,nginx,luci-lib-ipkg}
@@ -127,7 +112,7 @@ jobs:
         ./scripts/feeds update -a && ./scripts/feeds install -a
         patch -p1 < feeds/smpackage/.github/diy/patches/001-dnsmasq-lxc-jail.patch
         cp -f feeds/smpackage/.github/diy/10_system.js feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js || true
-        cp -f feeds/smpackage/.github/diy/${{matrix.target}}.config .config && make defconfig
+        make defconfig
         
     - name: Package hash compatibility hotfix
       working-directory: ./openwrt
@@ -165,65 +150,21 @@ jobs:
       if: (!cancelled())
       run: df -hT
 
-    - name: Upload bin directory
-      uses: actions/upload-artifact@main
-      if: success() && env.UPLOAD_BIN_DIR == 'true'
-      with:
-        name: OpenWrt_bin${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
-        path: openwrt/bin
-
     - name: Organize files
       id: organize
       if: success() && env.UPLOAD_FIRMWARE == 'true' && !cancelled()
       run: |
-        mkdir firmware
-        mv -f openwrt/bin/targets/*/*/{*combined*,*sysupgrade*} ./firmware/ 2>/dev/null || true
-        cp openwrt/.config ./firmware/${{matrix.target}}.config 2>/dev/null || true
-        cp openwrt/build_dir/target-*/linux-*/linux-*/.config ./firmware/${{matrix.target}}_kernel.config 2>/dev/null || true
+        mkdir -p firmware
+        IMG=$(find openwrt/bin/targets -type f -name "immortalwrt-x86-64-generic-squashfs-combined-efi.img" | head -n1)
+        if [ -n "$IMG" ]; then
+          mv -f "$IMG" firmware/
+        else
+          echo "::warning::immortalwrt-x86-64-generic-squashfs-combined-efi.img 未生成，请检查编译输出"
+        fi
         cd firmware
-        echo "v${{ env.date2 }}" > version.txt
-        md5_output=$( (md5sum *squashfs-sysupgrade* 2>/dev/null || md5sum *squashfs-combined-efi* 2>/dev/null) | awk '{print $1}' ) || true
-        echo "$md5_output" >> version.txt
-        rename -v "s/^immortalwrt/${{ env.VERSION }}-openwrt/" * || true
-        rename -v "s/friendlyarm_//" *gz || true
-        echo "$md5_output" >> version.txt
-        echo ${{matrix.target}} >> version.txt     
-        rm -rf sha256sums
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
         echo "status=success" >> $GITHUB_OUTPUT
         
-    - name: Upload firmware to Cloudflare R2
-      env:
-        R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-        R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-        R2_BUCKET: ${{ secrets.R2_BUCKET }}
-      if: steps.organize.outputs.status == 'success' && !cancelled()
-      run: |
-        curl -fsSL https://rclone.org/install.sh | sudo bash
-        mkdir -p ~/.config/rclone
-        R2_ID="${R2_ACCESS_KEY_ID}"
-        if [ -z "$R2_ID" ] || [ -z "$R2_SECRET_ACCESS_KEY" ] || [ -z "$R2_BUCKET" ] || [ -z "$R2_ENDPOINT" ]; then
-          echo "Missing Cloudflare R2 credentials"
-          exit 1
-        fi
-        cat > ~/.config/rclone/rclone.conf <<EOF
-        [r2]
-        type = s3
-        provider = Cloudflare
-        access_key_id = ${R2_ID}
-        secret_access_key = ${R2_SECRET_ACCESS_KEY}
-        endpoint = ${R2_ENDPOINT}
-        acl = private
-        no_check_bucket = true
-        EOF
-        rclone copy "${{ env.FIRMWARE }}" "r2:${R2_BUCKET}/firmware/${{matrix.target}}/" \
-          --fast-list \
-          --transfers 8 \
-          --checkers 16 \
-          --create-empty-src-dirs \
-          --checksum         
-      
     - name: Upload firmware directory
       uses: actions/upload-artifact@main
       if: steps.organize.outputs.status == 'success' && !cancelled()
@@ -255,36 +196,11 @@ jobs:
           ${{ secrets.DOCKER_ID }}/openwrt-6p:${{matrix.target}}
           ${{ env.DOCKERTAG }}        
 
-    - name: Upload firmware to cowtransfer
-      id: cowtransfer
-      if: steps.organize.outputs.status == 'success' && env.UPLOAD_COWTRANSFER == 'true' && !cancelled()
-      run: |
-        curl -fsSL git.io/file-transfer | sh
-        ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
-        echo "::warning file=cowtransfer.com::$(cat cowtransfer.log | grep https)"
-        echo "url=$(cat cowtransfer.log | grep https | cut -f3 -d" ")" >> $GITHUB_OUTPUT
-
-    - name: Upload firmware to WeTransfer
-      id: wetransfer
-      if: steps.organize.outputs.status == 'success' && env.UPLOAD_WETRANSFER == 'true' && !cancelled()
-      run: |
-        curl -fsSL git.io/file-transfer | sh
-        ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
-        echo "::warning file=wetransfer.com::$(cat wetransfer.log | grep https)"
-        echo "url=$(cat wetransfer.log | grep https | cut -f3 -d" ")" >> $GITHUB_OUTPUT
-
     - name: Generate release tag
       id: tag
       if: success() && env.UPLOAD_RELEASE == 'true' && !cancelled()
       run: |
-        R2_PUBLIC_BASE_URL="${{ secrets.R2_PUBLIC_BASE_URL }}"
-        [ -z "$R2_PUBLIC_BASE_URL" ] && R2_PUBLIC_BASE_URL="https://down.dllkids.xyz"
-        R2_LINK="${R2_PUBLIC_BASE_URL%/}/firmware/${{matrix.target}}/"
-        echo -e "墙内外加速下载 🎈:\n" >> release.txt
-        echo -e "[Cloudflare R2]($R2_LINK)\n" >> release.txt
-        touch release.txt
-        [ $UPLOAD_COWTRANSFER = true ] && echo "🔗 [Cowtransfer](${{ steps.cowtransfer.outputs.url }})" >> release.txt
-        [ $UPLOAD_WETRANSFER = true ] && echo "🔗 [WeTransfer](${{ steps.wetransfer.outputs.url }})" >> release.txt
+        echo "ImmortalWrt x86-64 固件：immortalwrt-x86-64-generic-squashfs-combined-efi.img" > release.txt
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: Upload firmware to release
@@ -312,4 +228,3 @@ jobs:
         delete_tags: true
       env:
         GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
-        
